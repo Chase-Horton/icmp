@@ -43,7 +43,7 @@ func main() {
 	fmt.Println("Successfully connected to", address)
 
 	msg := icmpMessage{
-		Type:         0,
+		Type:         8,
 		Code:         0,
 		Checksum:     0, // Checksum will be calculated later
 		RestOfHeader: 0,
@@ -73,6 +73,13 @@ func main() {
 	}
 	reply := make([]byte, 1024)
 	_, err = conn.Read(reply)
+	internetHeaderLength := (reply[1] & 0x0f) * 4 // Get the Internet Header Length (IHL) from the IP header
+	if internetHeaderLength == 0 {
+		internetHeaderLength = 20
+	}
+	icmpData := reply[internetHeaderLength:] // Skip the IP header
+
+	replyData := icmpData[8:] //Skip the ICMP header (first 8 bytes)
 	if err != nil {
 		fmt.Println("Failed to read response:", err)
 		return
@@ -80,4 +87,5 @@ func main() {
 	elapsed := time.Since(start)
 
 	fmt.Println("Received reply in", elapsed)
+	fmt.Println("Reply data:", string(replyData))
 }
