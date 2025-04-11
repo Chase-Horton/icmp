@@ -3,8 +3,77 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
+	"io"
+	"os"
+	"strings"
 	"syscall"
+	"unsafe"
 )
+
+//	func openTunForTest(name string) *os.File {
+//		file, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
+//		if err != nil {
+//			panic("failed to open tun")
+//		}
+//	}
+type Interface struct {
+	io.ReadWriteCloser
+	name string
+}
+
+func openDev() (ifce *Interface, err error) {
+	var fdInt int
+	if fdInt, err = syscall.Open(
+		"/dev/net/tun", os.O_RDWR|syscall.O_NONBLOCK, 0); err != nil {
+		return nil, err
+	}
+
+	name, err := setupFd(uintptr(fdInt))
+	if err != nil {
+		return nil, err
+	}
+
+	return &Interface{
+		ReadWriteCloser: os.NewFile(uintptr(fdInt), "tun"),
+		name:            name,
+	}, nil
+}
+func setupFd(fd uintptr) (name string, err error) {
+	var flags uint16 = 0x1000 //cIFFNOPI
+	flags |= 0x0002           // cIFFTUN
+
+	if name, err = createInterface(fd, "tun_server", flags); err != nil {
+		return "", err
+	}
+	return
+}
+func createInterface(fd uintptr, ifName string, flags uint16) (createdIFName string, err error) {
+	var req ifReq
+	req.Flags = flags
+	copy(req.Name[:], ifName)
+
+	err = ioctl(fd, syscall.TUNSETIFF, uintptr(unsafe.Pointer(&req)))
+	if err != nil {
+		return
+	}
+
+	createdIFName = strings.Trim(string(req.Name[:]), "\x00")
+	return
+}
+
+type ifReq struct {
+	Name  [0x10]byte
+	Flags uint16
+	pad   [0x28 - 0x10 - 2]byte
+}
+
+func ioctl(fd uintptr, request uintptr, argp uintptr) error {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(request), argp)
+	if errno != 0 {
+		return os.NewSyscallError("ioctl", errno)
+	}
+	return nil
+}
 
 const TEST = true
 
@@ -40,7 +109,7 @@ func recievePackets(server *syscall.SockaddrInet4, packets chan []byte) {
 	buf := make([]byte, 65535)
 	for {
 		n, from, err := syscall.Recvfrom(fdRecv, buf, 0)
-		fmt.Sprintf("bytes recieved:%d\n", n)
+		fmt.Printf("bytes recieved:\n%d", n)
 		if err != nil {
 			panic(err)
 		}
@@ -48,18 +117,10 @@ func recievePackets(server *syscall.SockaddrInet4, packets chan []byte) {
 		case *syscall.SockaddrInet4:
 			//if testing locally all addresses will resolve to 127.0.0.1 so need to parse packet
 			if TEST {
-				src := [4]byte{
-					buf[12],
-					buf[13],
-					buf[14],
-					buf[15],
-				}
-				if [4]byte{127, 0, 0, 2} == src {
-					packets <- buf
-				}
+				packets <- buf[:n]
 			} else {
 				if sa.Addr == server.Addr {
-					packets <- buf
+					packets <- buf[:n]
 				}
 			}
 			fmt.Println("addresses")
@@ -150,24 +211,43 @@ func parsePacket(packet []byte) []byte {
 	return packet[28:totalLen]
 }
 func main() {
-	src := [4]byte{127, 0, 0, 3}
-	client := [4]byte{127, 0, 0, 2}
+	if !TEST {
+		src := [4]byte{127, 0, 0, 3}
+		client := [4]byte{127, 0, 0, 2}
 
-	fd, clientAddr := establish_proxy(client)
+		fd, clientAddr := establish_proxy(client)
 
-	packetsRecv := make(chan []byte)
-	packetsSend := make(chan []byte)
+		packetsRecv := make(chan []byte)
+		packetsSend := make(chan []byte)
 
-	go recievePackets(clientAddr, packetsRecv)
-	go sendPackets(fd, src, clientAddr, packetsSend)
-	// add something here to intercept traffic on client
-	// when traffic is recieved
+		go recievePackets(clientAddr, packetsRecv)
+		go sendPackets(fd, src, clientAddr, packetsSend)
+		// add something here to intercept traffic on client
+		// when traffic is recieved
 
-	fmt.Printf("Listening on port %d.%d.%d.%d\n", client[0], client[1], client[2], client[3])
-	for packetRecv := range packetsRecv {
-		data := parsePacket(packetRecv)
-		fmt.Println("Parsed:")
-		fmt.Println(hex.Dump(data))
-		packetsSend <- makePackets([]byte("Message Recieved :)"))[0]
+		fmt.Printf("Listening on port %d.%d.%d.%d\n", client[0], client[1], client[2], client[3])
+		for packetRecv := range packetsRecv {
+			data := parsePacket(packetRecv)
+			fmt.Println("Parsed:")
+			fmt.Println(hex.Dump(data))
+			//packetsSend <- makePackets([]byte("Message Recieved :)"))[0]
+		}
+	} else {
+		tun, err := openDev()
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("Listening on tun_server")
+		frame := []byte{}
+		for {
+			n, err := tun.Read([]byte(frame))
+			if err != nil {
+				panic(err)
+			}
+			dat := frame[:n]
+			if n != 0 {
+				fmt.Println(hex.Dump(dat))
+			}
+		}
 	}
 }

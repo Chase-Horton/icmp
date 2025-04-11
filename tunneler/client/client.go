@@ -47,15 +47,7 @@ func recievePackets(server *syscall.SockaddrInet4, packets chan []byte) {
 		switch sa := from.(type) {
 		case *syscall.SockaddrInet4:
 			if TEST {
-				src := [4]byte{
-					buf[12],
-					buf[13],
-					buf[14],
-					buf[15],
-				}
-				if [4]byte{127, 0, 0, 3} == src {
-					packets <- buf
-				}
+
 			} else {
 				if sa.Addr == server.Addr {
 					packets <- buf
