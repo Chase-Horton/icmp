@@ -1,94 +1,11 @@
 package protocol_unix
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"time"
 )
 
-type icmpMsg struct {
-	Type         uint8  // Type of the ICMP message
-	Code         uint8  // Code of the ICMP message
-	Checksum     uint16 // Checksum for error-checking
-	RestOfHeader uint32 // Rest of the header (depends on the type and code)
-	Data         []byte // Payload data
-}
-
-func makeIcmpMsg() *icmpMsg {
-	msg := &icmpMsg{
-		Type:         8,
-		Code:         0,
-		Checksum:     0, // Checksum will be calculated later
-		RestOfHeader: 0,
-		Data:         []byte("!"),
-	}
-	return msg
-}
-func (msg *icmpMsg) Bytes() []byte {
-	raw := []byte{
-		msg.Type,
-		msg.Code,
-		0, 0, // Placeholder for checksum
-		byte(msg.RestOfHeader >> 24),
-		byte(msg.RestOfHeader >> 16),
-		byte(msg.RestOfHeader >> 8),
-		byte(msg.RestOfHeader & 0xff),
-	}
-	raw = append(raw, msg.Data...)
-
-	msg.Checksum = checkSum(raw)
-	raw[2] = byte(msg.Checksum >> 8)
-	raw[3] = byte(msg.Checksum & 0xff)
-	return raw
-}
-
-type ipv4Header struct {
-	VersionAndIHL      uint8
-	TOS                uint8
-	TotalLength        uint16
-	Identification     uint16
-	FlagsAndFrag       uint16
-	TTL                uint8
-	Protocol           uint8
-	HeaderChecksum     uint16
-	SourceAddress      uint32
-	DestinationAddress uint32
-}
-
-func (ip *ipv4Header) Bytes() []byte {
-	buf := new(bytes.Buffer)
-	_ = binary.Write(buf, binary.BigEndian, ip.VersionAndIHL)
-	_ = binary.Write(buf, binary.BigEndian, ip.TOS)
-	_ = binary.Write(buf, binary.BigEndian, ip.TotalLength)
-	_ = binary.Write(buf, binary.BigEndian, ip.Identification)
-	_ = binary.Write(buf, binary.BigEndian, ip.FlagsAndFrag)
-	_ = binary.Write(buf, binary.BigEndian, ip.TTL)
-	_ = binary.Write(buf, binary.BigEndian, ip.Protocol)
-	_ = binary.Write(buf, binary.BigEndian, ip.HeaderChecksum)
-	_ = binary.Write(buf, binary.BigEndian, ip.SourceAddress)
-	_ = binary.Write(buf, binary.BigEndian, ip.DestinationAddress)
-	return buf.Bytes()
-}
-
-func makeIpv4Header(source, dest [4]byte) *ipv4Header {
-	header := &ipv4Header{}
-	header.VersionAndIHL = 4<<4 | 5
-	header.TOS = 0          //dscp | ecn 0<<6 | 0
-	header.TotalLength = 29 //20 header 8 icmp header 1 data
-	header.Identification = 0xCAFE
-	header.FlagsAndFrag = 0b010 << 13 //0<<15 | 1<<14 | 0 <<13 | 0 // flags reserved, dont fragment, more fragments, frag offset
-	header.TTL = 64                   //max 64 hops
-	header.Protocol = 1               //icmp
-	header.HeaderChecksum = 0
-	header.SourceAddress = binary.BigEndian.Uint32(source[:])
-	header.DestinationAddress = binary.BigEndian.Uint32(dest[:])
-
-	bytes := header.Bytes()
-	header.HeaderChecksum = checkSum(bytes)
-	return header
-}
 func checkSum(data []byte) uint16 {
 	sum := 0
 	for i := 0; i < len(data)-1; i += 2 {
@@ -103,13 +20,54 @@ func checkSum(data []byte) uint16 {
 	return uint16(^sum)
 }
 
-func MakePingPacket(src, dest [4]byte) []byte {
-	v4Header := makeIpv4Header(src, dest)
-	icmpMsg := makeIcmpMsg()
-	totalBytes := []byte{}
-	totalBytes = append(totalBytes, v4Header.Bytes()...)
-	totalBytes = append(totalBytes, icmpMsg.Bytes()...)
-	return totalBytes
+var baseIpPacket = [29]byte{
+	4<<4 | 5,   // Vers
+	0,          // TOS
+	0,          //totlength 1/2
+	29,         //totlength 2/2
+	0xCA,       // ID 1/2
+	0xFE,       // ID 2/2
+	0b01000000, //flags 1/2
+	0,          //flags 2/2
+	64,         //ttl
+	1,          //protocol icmp
+	0,          //ipv4 checksum 1/2
+	0,          //ipv4 checksum 2/2
+	0,          //src 1/4
+	0,          //src 2/4
+	0,          //src 3/4
+	0,          //src 4/4
+	0,          //dest 1/4
+	0,          //dest 2/4
+	0,          //dest 3/4
+	0,          //dest 4/4
+	8,          //icmp type ping
+	0,          //code of icmp message
+	0xd6,       //checksum 1/2
+	0xff,       //checksum 2/2
+	0,          //rest of header 1/4
+	0,          //rest of header 2/4
+	0,          //rest of header 3/4
+	0,          //rest of header 4/4
+	'!',        //data: !
+}
+
+func MakePingPacketFast(src, dest [4]byte) [29]byte {
+	packet := baseIpPacket
+	packet[12] = src[0]
+	packet[13] = src[1]
+	packet[14] = src[2]
+	packet[15] = src[3]
+	packet[16] = dest[0]
+	packet[17] = dest[1]
+	packet[18] = dest[2]
+	packet[19] = dest[3]
+
+	v4Checksum := checkSum(packet[:20])
+	packet[10] = byte(v4Checksum >> 8)
+	packet[11] = byte(v4Checksum)
+
+	return packet
 }
 
 type PingResult struct {
