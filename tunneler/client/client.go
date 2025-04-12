@@ -47,7 +47,10 @@ func recievePackets(server *syscall.SockaddrInet4, packets chan []byte) {
 		switch sa := from.(type) {
 		case *syscall.SockaddrInet4:
 			if TEST {
-
+				ident := uint16(buf[4])<<8 | uint16(buf[5])
+				if ident == 0xBABE {
+					packets <- buf[:n]
+				}
 			} else {
 				if sa.Addr == server.Addr {
 					packets <- buf
@@ -78,7 +81,7 @@ func initBaseHeader(src [4]byte, dest *syscall.SockaddrInet4) [28]byte {
 		dest.Addr[1], //dest 2/4
 		dest.Addr[2], //dest 3/4
 		dest.Addr[3], //dest 4/4
-		8,            //icmp type ping
+		0,            //icmp type ping
 		0,            //code of icmp message
 		0,            //checksum 1/2
 		0,            //checksum 2/2
@@ -127,7 +130,7 @@ var baseHeader [28]byte
 
 func sendPackets(fd int, dest *syscall.SockaddrInet4, packets chan []byte) {
 	for packet := range packets {
-		fmt.Printf("Sending:\n%s", hex.Dump(packet))
+		fmt.Printf("Sending:\n%s\n", hex.Dump(packet))
 		syscall.Sendto(fd, packet[:], 0, dest)
 	}
 }
@@ -157,9 +160,9 @@ func main() {
 		packetsSend <- p
 	}
 
-	// for packetRecv := range packetsRecv {
-	// 	packet := parsePacket(packetRecv)
-	// 	fmt.Println("Recieved from Server: ")
-	// 	fmt.Println(hex.Dump(packet))
-	// }
+	for packetRecv := range packetsRecv {
+		packet := parsePacket(packetRecv)
+		fmt.Println("Recieved from Server: ")
+		fmt.Println(hex.Dump(packet))
+	}
 }
